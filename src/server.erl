@@ -10,7 +10,7 @@
 -author("Victor").
 
 %% API
--export([start_controller/0, start_server/1]).
+-export([start_controller/0, start_server/0]).
 
 start_controller() ->
   register(controller, spawn(fun() -> control([]) end)).
@@ -73,21 +73,21 @@ control(CurrentSocketsMap) ->
       control(CurrentSocketsMap)
   end.
 
-start_server(ControllerNode) ->
+start_server() ->
   {ok, Listen} = gen_tcp:listen(2345, [binary, {packet, 2},
     {reuseaddr, true},
     {active, true}]),
-  seq_loop(Listen, ControllerNode).
+  seq_loop(Listen).
 
-seq_loop(Listen, ControllerNode) ->
+seq_loop(Listen) ->
   {ok, Socket} = gen_tcp:accept(Listen),
 
-  spawn(fun() -> seq_loop(Listen, ControllerNode) end),
-  {controller,ControllerNode} ! {send_to_self, Socket, "Please login!\n"},
+  spawn(fun() -> seq_loop(Listen) end),
+  controller ! {send_to_self, Socket, "Please login!\n"},
   %% 连接成功以后进行登录，直到登录成功才能进行其他命令
-  loop(ControllerNode, Socket, "", false).
+  loop(Socket, "", false).
 
-loop(ControllerNode, Socket, FromName, IsLogined) ->
+loop(Socket, FromName, IsLogined) ->
   receive
     {tcp, Socket, Bin} ->
       io:format("Server received binary = ~p~n", [Bin]),
@@ -98,12 +98,12 @@ loop(ControllerNode, Socket, FromName, IsLogined) ->
           %% broadcast message
           if
             IsLogined ->
-              {controller, ControllerNode} ! {send_to_self, Socket, "you say:" ++ Message},
-              {controller, ControllerNode} ! {broadcast, [FromName],  FromName ++ " says " ++ Message};
+              controller ! {send_to_self, Socket, "you say:" ++ Message},
+              controller ! {broadcast, [FromName],  FromName ++ " says " ++ Message};
             true ->
-              {controller, ControllerNode} ! {send_to_self, Socket, "Invalid command"}
+              controller ! {send_to_self, Socket, "Invalid command"}
           end,
-          loop(ControllerNode, Socket, FromName, IsLogined);
+          loop(Socket, FromName, IsLogined);
         1 ->
           %% execute command
           case re:replace(Command, "/+", "", [{return,list}]) of
@@ -116,27 +116,27 @@ loop(ControllerNode, Socket, FromName, IsLogined) ->
               end,
               if
                 IsLogined ->
-                  {controller, ControllerNode} ! {send_to_self, Socket, "Name exist, please choose anthoer name.."},
-                  loop(ControllerNode, Socket, FromName, IsLogined);
+                  controller ! {send_to_self, Socket, "Name exist, please choose anthoer name.."},
+                  loop(Socket, FromName, IsLogined);
                 true ->
-                  {controller, ControllerNode} ! {add, self(), UserName, Socket},
+                  controller ! {add, self(), UserName, Socket},
                   receive
                     {add, ok} ->
-                      {controller, ControllerNode} ! {send_to_self, Socket, "Login sucess!"},
-                      {controller, ControllerNode} ! {broadcast, [UserName], UserName ++ " has logined!"},
-                      loop(ControllerNode, Socket, UserName, true);
+                      controller ! {send_to_self, Socket, "Login sucess!"},
+                      controller ! {broadcast, [UserName], UserName ++ " has logined!"},
+                      loop(Socket, UserName, true);
                     {add, failed} ->
-                      loop(ControllerNode, Socket, FromName, IsLogined)
+                      loop(Socket, FromName, IsLogined)
                   end
               end;
             "quit" ->
               if
                 IsLogined ->
-                  {controller, ControllerNode} ! {send_to_self, Socket, "quit"},
-                  {controller, ControllerNode} ! {delete, FromName, Socket},
-                  {controller, ControllerNode} ! {broadcast, [FromName], FromName ++ " has quit!"};
+                  controller ! {send_to_self, Socket, "quit"},
+                  controller ! {delete, FromName, Socket},
+                  controller ! {broadcast, [FromName], FromName ++ " has quit!"};
                 true ->
-                  {controller, ControllerNode} ! {send_to_self, Socket, "quit"}
+                  controller ! {send_to_self, Socket, "quit"}
               end;
             "to" ->
               if
@@ -144,23 +144,23 @@ loop(ControllerNode, Socket, FromName, IsLogined) ->
                   if
                     length(Tail) > 1 ->
                       [_, ToName, ToMessage] = re:split(Message, "\\s+", [{return, list},{parts, 3}]),
-                      {controller, ControllerNode} ! {send_to_self, Socket, "you say to " ++ ToName ++ ":" ++ ToMessage},
-                      {controller, ControllerNode} ! {send_to_other, Socket, ToName, FromName ++ " says to you:" ++ ToMessage};
+                      controller ! {send_to_self, Socket, "you say to " ++ ToName ++ ":" ++ ToMessage},
+                      controller ! {send_to_other, Socket, ToName, FromName ++ " says to you:" ++ ToMessage};
                     true ->
-                      {controller, ControllerNode} ! {send_to_self, Socket, "Invalid command"}
+                      controller ! {send_to_self, Socket, "Invalid command"}
                   end;
                 true ->
-                  {controller, ControllerNode} ! {send_to_self, Socket, "Invalid command"}
+                  controller ! {send_to_self, Socket, "Invalid command"}
               end,
-              loop(ControllerNode, Socket, FromName, IsLogined);
+              loop(Socket, FromName, IsLogined);
             "who" ->
               if
                 IsLogined ->
-                  {controller, ControllerNode} ! {who, Socket};
+                  controller ! {who, Socket};
                 true ->
-                  {controller, ControllerNode} ! {send_to_self, Socket, "Invalid command"}
+                  controller ! {send_to_self, Socket, "Invalid command"}
               end,
-              loop(ControllerNode, Socket, FromName, IsLogined);
+              loop(Socket, FromName, IsLogined);
             "history" ->
               void
           end;
@@ -172,26 +172,26 @@ loop(ControllerNode, Socket, FromName, IsLogined) ->
                 length(Tail) > 0 ->
                   [ToName | _] = Tail,
                   DefinedMessage = defined_message({private, Command}),
-                  {controller, ControllerNode} ! {send_to_self, Socket, "you say to " ++ ToName ++ ":" ++ DefinedMessage},
-                  {controller, ControllerNode} ! {send_to_other, Socket, ToName, FromName ++ " says to you:" ++ DefinedMessage},
-                  {controller, ControllerNode} ! {broadcast, [FromName,ToName], FromName ++ " says to " ++ ToName ++ ":" ++ DefinedMessage};
+                  controller ! {send_to_self, Socket, "you say to " ++ ToName ++ ":" ++ DefinedMessage},
+                  controller ! {send_to_other, Socket, ToName, FromName ++ " says to you:" ++ DefinedMessage},
+                  controller ! {broadcast, [FromName,ToName], FromName ++ " says to " ++ ToName ++ ":" ++ DefinedMessage};
                 true ->
                   DefinedMessage = defined_message({public, Command}),
-                  {controller, ControllerNode} ! {send_to_self, Socket, "you say to all:" ++ DefinedMessage},
-                  {controller, ControllerNode} ! {broadcast, [FromName], FromName ++ " says to all:" ++ DefinedMessage}
+                  controller ! {send_to_self, Socket, "you say to all:" ++ DefinedMessage},
+                  controller ! {broadcast, [FromName], FromName ++ " says to all:" ++ DefinedMessage}
               end;
             true ->
-              {controller, ControllerNode} ! {send_to_self, Socket, "Invalid command"}
+              controller ! {send_to_self, Socket, "Invalid command"}
           end,
-          loop(ControllerNode, Socket, FromName, IsLogined);
+          loop(Socket, FromName, IsLogined);
 
         _Any ->
           ok = gen_tcp:send(Socket, term_to_binary("Invalid command")),
-          loop(ControllerNode, Socket, FromName, IsLogined)
+          loop(Socket, FromName, IsLogined)
       end;
     {tcp_closed, Socket} ->
       io:format("Server closed ~n"),
-      {controller, ControllerNode} ! {delete, Socket}
+      controller ! {delete, Socket}
   end.
 
 %% 预设信息
