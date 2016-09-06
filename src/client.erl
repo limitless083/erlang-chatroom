@@ -10,15 +10,18 @@
 -author("Victor").
 
 %% API
--export([start/0,start/2,scan_input/0]).
-
-start() ->
-  register(client_socket,spawn(?MODULE, start, ["localhost", 2345])).
+-export([start/2]).
 
 start(Ip, Port) ->
-  {ok, Socket} = gen_tcp:connect(Ip, Port, [binary, {packet,2}]),
-  register(scanner, spawn(?MODULE, scan_input, [])),
-  loop(Socket).
+  register(client_socket,
+    spawn(
+      fun() ->
+        {ok, Socket} = gen_tcp:connect(Ip, Port, [binary, {packet,2}]),
+        register(scanner, spawn(fun() -> scan_input() end)),
+        loop(Socket)
+      end
+    )
+  ).
 
 loop(Socket) ->
   receive
