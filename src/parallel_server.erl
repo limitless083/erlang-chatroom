@@ -98,6 +98,8 @@ control(CurrentSocketsMap) ->
 
 %% server
 start(Port) ->
+  %% 连接所有节点
+  net_adm:world(),
   register(controller, spawn(fun() -> control([]) end)),
   {ok, Listen} = gen_tcp:listen(Port, [binary, {packet, 2},
     {reuseaddr, true},
