@@ -1,3 +1,5 @@
+### 有控制器的分布式
+
 假设
 
 * controller机器IP为192.168.90.1，域名为hatch.auto.local; 
@@ -35,3 +37,53 @@
 在client1机器(IP为192.168.93.100,确保能ping通server1和server2)上运行`client:start("192.168.93.53",2345)`则client1连通了server1，并能进行交互。
 在client2机器(IP为192.168.93.101,确保能ping通server1和server2)上运行`client:start("192.168.93.54",2345)`则client2连通了server2，并能进行交互。
 
+---
+
+### 没有控制器的分布式
+
+假设
+
+* server1机器IP为192.168.93.53，域名为node22.auto.com; 
+* server2机器IP为192.168.93.54, 域名为node23.auto.com;
+1. 修改server1中的/etc/hosts文件，添加
+```
+192.168.93.54 node23 node23.auto.com
+```
+同理修改server2的/etc/hosts文件，添加
+```
+192.168.93.53 node22 node22.auto.com
+```
+2. 修改server1中erlang-chatroom/src/.hosts.erlang为
+```
+'node23'. 
+'node23.auto.com'.
+^(new line)
+```
+
+同理修改server2中的erlang-chatroom/src/.hosts.erlang为
+```
+'node22'. 
+'node22.auto.com'.
+^(new line)
+```
+
+3. 启动server1和server2
+
+在server1中输入
+```
+erl -sname server1 -setcookie abc
+parallel_server:start(2345).
+```
+
+在server2中输入
+```
+erl -sname server2 -setcookie abc
+parallel_server:start(3456). 
+```
+
+4. 启动client
+```
+erl
+client:start("192.168.93.53",2345).
+client:start("192.168.93.54",3456).
+```
