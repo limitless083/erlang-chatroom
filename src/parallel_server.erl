@@ -53,13 +53,10 @@ control(CurrentSocketsMap) ->
       control(CurrentSocketsMap);
     {send_to_self, FromNode, Socket, Message} ->
       io:format("controller receive ~p~n", [{send_to_self, FromNode, Socket, Message}]),
-      if
-        FromNode =:= node() -> gen_tcp:send(Socket, term_to_binary(Message));
-        true -> void
-      end,
+      gen_tcp:send(Socket, term_to_binary(Message)),
       control(CurrentSocketsMap);
-    {send_to_other, FromNode, Socket, ToName, Message} ->
-      io:format("controller receive ~p~n", [{send_to_other, FromNode, Socket, ToName, Message}]),
+    {send_to_other, From, Socket, ToName, Message} ->
+      io:format("controller receive ~p~n", [{send_to_other, From, Socket, ToName, Message}]),
       NameSocketMap = lists:filter(
         fun({_Node, UserName, _ToSocket}) ->
           UserName =:= ToName
@@ -69,27 +66,25 @@ control(CurrentSocketsMap) ->
         length(NameSocketMap) > 0 ->
           [{ToNode, _UserName, ToSocket}] = NameSocketMap,
           if
-            ToNode =:= node() -> gen_tcp:send(ToSocket,  term_to_binary(Message));
-            true -> void
+            ToSocket =/= Socket ->
+              From ! {send_to_other, ok},
+              {controller, ToNode} ! {send_to_self, ToNode, ToSocket, Message };
+            true ->
+              From ! {send_to_other, failed},
+              gen_tcp:send(Socket, term_to_binary("you can't talk to yourself!"))
           end;
         true ->
-          if
-            FromNode =:= node() -> gen_tcp:send(Socket, term_to_binary(ToName ++ " not on line!"));
-            true -> void
-          end
+          From ! {send_to_other, other},
+          gen_tcp:send(Socket, term_to_binary(ToName ++ " not on line!"))
       end,
       control(CurrentSocketsMap);
-    {who, FromNode, Socket} ->
-      if
-        FromNode =:= node() ->
-          lists:foreach(
-            fun({_Node, Name, _Socket}) ->
-              gen_tcp:send(Socket, term_to_binary(Name))
-            end, CurrentSocketsMap
-          ),
-          gen_tcp:send(Socket, term_to_binary("Total online user: " ++ integer_to_list(length(CurrentSocketsMap))));
-        true -> void
-      end,
+    {who, _FromNode, Socket} ->
+      lists:foreach(
+        fun({_Node, Name, _Socket}) ->
+          gen_tcp:send(Socket, term_to_binary(Name))
+        end, CurrentSocketsMap
+      ),
+      gen_tcp:send(Socket, term_to_binary("Total online user: " ++ integer_to_list(length(CurrentSocketsMap)))),
       control(CurrentSocketsMap);
     _Any ->
       io:format("controller receive balala=~p~n", [_Any]),
@@ -110,7 +105,7 @@ seq_loop(Listen) ->
   {ok, Socket} = gen_tcp:accept(Listen),
   spawn(fun() -> seq_loop(Listen) end),
   Nodes = [node()|nodes()],
-  {controller, node()} ! {send_to_self, node(), Socket, "Please login!\n"},
+  send_message_to_other_server([node()],{send_to_self, node(), Socket, "Please login!\n"}),
   loop(Nodes, Socket, "", false).
 
 loop(Nodes, Socket, FromName, IsLogined) ->
@@ -124,10 +119,10 @@ loop(Nodes, Socket, FromName, IsLogined) ->
           %% broadcast message
           if
             IsLogined ->
-              send_message_to_every_server(Nodes, {send_to_self, node(), Socket, "you say:" ++ Message}),
-              send_message_to_every_server(Nodes, {broadcast, node(), [FromName],  FromName ++ " says " ++ Message});
+              send_message_to_other_server([node()], {send_to_self, node(), Socket, "you say:" ++ Message}),
+              send_message_to_other_server(Nodes, {broadcast, node(), [FromName],  FromName ++ " says " ++ Message});
             true ->
-              send_message_to_every_server(Nodes, {send_to_self, node(), Socket, "Invalid command"})
+              send_message_to_other_server([node()], {send_to_self, node(), Socket, "Invalid command"})
           end,
           loop(Nodes, Socket, FromName, IsLogined);
         1 ->
@@ -142,28 +137,28 @@ loop(Nodes, Socket, FromName, IsLogined) ->
               end,
               if
                 IsLogined ->
-                  send_message_to_every_server(Nodes,{send_to_self, node(), Socket, "Name exist, please choose anthoer name.."}),
+                  send_message_to_other_server([node()],{send_to_self, node(), Socket, "Name exist, please choose anthoer name.."}),
                   loop(Nodes, Socket, FromName, IsLogined);
                 true ->
-                  send_message_to_every_server(Nodes,{add, node(), self(), UserName, Socket}),
+                  send_message_to_other_server(Nodes,{add, node(), self(), UserName, Socket}),
                   receive
                     {add, ok} ->
-                      send_message_to_every_server(Nodes,{send_to_self, node(), Socket, "Login sucess!"}),
-                      send_message_to_every_server(Nodes,{broadcast, node(), [UserName], UserName ++ " has logined!"}),
+                      send_message_to_other_server([node()],{send_to_self, node(), Socket, "Login sucess!"}),
+                      send_message_to_other_server(Nodes,{broadcast, node(), [UserName], UserName ++ " has logined!"}),
                       loop(Nodes, Socket, UserName, true);
                     {add, failed} ->
-                      send_message_to_every_server(Nodes,{send_to_self, node(), Socket, "Name exist, please choose anthoer name.."}),
+                      send_message_to_other_server([node()],{send_to_self, node(), Socket, "Name exist, please choose anthoer name.."}),
                       loop(Nodes, Socket, FromName, IsLogined)
                   end
               end;
             "quit" ->
               if
                 IsLogined ->
-                  send_message_to_every_server(Nodes,{send_to_self, node(), Socket, "quit"}),
-                  send_message_to_every_server(Nodes,{delete, node(), FromName, Socket}),
-                  send_message_to_every_server(Nodes,{broadcast, node(), [FromName], FromName ++ " has quit!"});
+                  send_message_to_other_server([node()],{send_to_self, node(), Socket, "quit"}),
+                  send_message_to_other_server(Nodes,{delete, node(), FromName, Socket}),
+                  send_message_to_other_server(Nodes,{broadcast, node(), [FromName], FromName ++ " has quit!"});
                 true ->
-                  send_message_to_every_server(Nodes,{send_to_self, node(), Socket, "quit"})
+                  send_message_to_other_server([node()],{send_to_self, node(), Socket, "quit"})
               end;
             "to" ->
               if
@@ -171,21 +166,29 @@ loop(Nodes, Socket, FromName, IsLogined) ->
                   if
                     length(Tail) > 1 ->
                       [_, ToName, ToMessage] = re:split(Message, "\\s+", [{return, list},{parts, 3}]),
-                      send_message_to_every_server(Nodes,{send_to_self, node(), Socket, "you say to " ++ ToName ++ ":" ++ ToMessage}),
-                      send_message_to_every_server(Nodes,{send_to_other, node(), Socket, ToName, FromName ++ " says to you:" ++ ToMessage});
+
+                      send_message_to_other_server([node()],{send_to_other, self(), Socket, ToName, FromName ++ " says to you:" ++ ToMessage}),
+                      receive
+                        {send_to_other, ok} ->
+                          send_message_to_other_server([node()],{send_to_self, node(), Socket, "you say to " ++ ToName ++ ":" ++ ToMessage});
+                        {send_to_other, failed} ->
+                          void;
+                        {send_to_other, other} ->
+                          void
+                      end;
                     true ->
-                      send_message_to_every_server(Nodes,{send_to_self, node(), Socket, "Invalid command"})
+                      send_message_to_other_server([node()],{send_to_self, node(), Socket, "Invalid command"})
                   end;
                 true ->
-                  send_message_to_every_server(Nodes,{send_to_self, node(), Socket, "Invalid command"})
+                  send_message_to_other_server([node()],{send_to_self, node(), Socket, "Invalid command"})
               end,
               loop(Nodes, Socket, FromName, IsLogined);
             "who" ->
               if
                 IsLogined ->
-                  send_message_to_every_server(Nodes,{who, node(), Socket});
+                  send_message_to_other_server([node()],{who, node(), Socket});
                 true ->
-                  send_message_to_every_server(Nodes,{send_to_self, node(), Socket, "Invalid command"})
+                  send_message_to_other_server([node()],{send_to_self, node(), Socket, "Invalid command"})
               end,
               loop(Nodes, Socket, FromName, IsLogined);
             "history" ->
@@ -199,32 +202,32 @@ loop(Nodes, Socket, FromName, IsLogined) ->
                 length(Tail) > 0 ->
                   [ToName | _] = Tail,
                   DefinedMessage = defined_message({private, Command}),
-                  send_message_to_every_server(Nodes,{send_to_self, node(), Socket, "you say to " ++ ToName ++ ":" ++ DefinedMessage}),
-                  send_message_to_every_server(Nodes,{send_to_other, node(), Socket, ToName, FromName ++ " says to you:" ++ DefinedMessage}),
-                  send_message_to_every_server(Nodes,{broadcast, node(), [FromName,ToName], FromName ++ " says to " ++ ToName ++ ":" ++ DefinedMessage});
+                  send_message_to_other_server([node()],{send_to_self, node(), Socket, "you say to " ++ ToName ++ ":" ++ DefinedMessage}),
+                  send_message_to_other_server([node()],{send_to_other, self(), Socket, ToName, FromName ++ " says to you:" ++ DefinedMessage}),
+                  send_message_to_other_server(Nodes,{broadcast, node(), [FromName,ToName], FromName ++ " says to " ++ ToName ++ ":" ++ DefinedMessage});
                 true ->
                   DefinedMessage = defined_message({public, Command}),
-                  send_message_to_every_server(Nodes,{send_to_self, node(), Socket, "you say to all:" ++ DefinedMessage}),
-                  send_message_to_every_server(Nodes,{broadcast, node(), [FromName], FromName ++ " says to all:" ++ DefinedMessage})
+                  send_message_to_other_server([node()],{send_to_self, node(), Socket, "you say to all:" ++ DefinedMessage}),
+                  send_message_to_other_server(Nodes,{broadcast, node(), [FromName], FromName ++ " says to all:" ++ DefinedMessage})
               end;
             true ->
-              send_message_to_every_server(Nodes,{send_to_self, node(), Socket, "Invalid command"})
+              send_message_to_other_server([node()],{send_to_self, node(), Socket, "Invalid command"})
           end,
           loop(Nodes, Socket, FromName, IsLogined);
 
         _Any ->
-          send_message_to_every_server(Nodes,{send_to_self, node(), Socket, "Invalid command"}),
+          send_message_to_other_server([node()],{send_to_self, node(), Socket, "Invalid command"}),
           loop(Nodes, Socket, FromName, IsLogined)
       end;
     {tcp_closed, Socket} ->
       io:format("Server closed ~n"),
       if
         IsLogined ->
-          send_message_to_every_server(Nodes,{send_to_self, node(), Socket, "quit"}),
-          send_message_to_every_server(Nodes,{delete, node(), FromName, Socket}),
-          send_message_to_every_server(Nodes,{broadcast, node(), [FromName], FromName ++ " has quit!"});
+          send_message_to_other_server([node()],{send_to_self, node(), Socket, "quit"}),
+          send_message_to_other_server(Nodes,{delete, node(), FromName, Socket}),
+          send_message_to_other_server(Nodes,{broadcast, node(), [FromName], FromName ++ " has quit!"});
         true ->
-          send_message_to_every_server(Nodes,{send_to_self, node(), Socket, "quit"})
+          send_message_to_other_server([node()],{send_to_self, node(), Socket, "quit"})
       end
   end.
 
@@ -259,7 +262,7 @@ double_filter(List, Map) ->
     Map
   ).
 
-send_message_to_every_server(Nodes, Message) ->
+send_message_to_other_server(Nodes, Message) ->
   lists:foreach(
     fun(Node) ->
       {controller, Node} ! Message
