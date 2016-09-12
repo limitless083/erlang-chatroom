@@ -103,7 +103,6 @@ start(Port) ->
     {reuseaddr, true},
     {active, true}]),
   do_this_once([node()|nodes()]),
-  mnesia:start(),
   seq_loop(Listen).
 
 seq_loop(Listen) ->
