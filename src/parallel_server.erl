@@ -10,7 +10,10 @@
 -author("Victor").
 
 %% API
--export([start/1]).
+-export([start/1,reset_tables/0,query_message_item/1]).
+
+-record(message, {time,from_name,to_name,msg}).
+-include_lib("stdlib/include/qlc.hrl").
 
 control(CurrentSocketsMap) ->
   receive
@@ -99,6 +102,8 @@ start(Port) ->
   {ok, Listen} = gen_tcp:listen(Port, [binary, {packet, 2},
     {reuseaddr, true},
     {active, true}]),
+  do_this_once([node()|nodes()]),
+  mnesia:start(),
   seq_loop(Listen).
 
 seq_loop(Listen) ->
@@ -121,6 +126,7 @@ loop(Nodes, Socket, FromName, IsLogined) ->
             IsLogined ->
               send_message_to_other_server([node()], {send_to_self, node(), Socket, "you say:" ++ Message}),
               send_message_to_other_server(Nodes, {broadcast, node(), [FromName],  FromName ++ " says " ++ Message});
+
             true ->
               send_message_to_other_server([node()], {send_to_self, node(), Socket, "Invalid command"})
           end,
@@ -170,7 +176,8 @@ loop(Nodes, Socket, FromName, IsLogined) ->
                       send_message_to_other_server([node()],{send_to_other, self(), Socket, ToName, FromName ++ " says to you:" ++ ToMessage}),
                       receive
                         {send_to_other, ok} ->
-                          send_message_to_other_server([node()],{send_to_self, node(), Socket, "you say to " ++ ToName ++ ":" ++ ToMessage});
+                          send_message_to_other_server([node()],{send_to_self, node(), Socket, "you say to " ++ ToName ++ ":" ++ ToMessage}),
+                          add_message_item(calendar:now_to_local_time(erlang:timestamp()), FromName, ToName, ToMessage);
                         {send_to_other, failed} ->
                           void;
                         {send_to_other, other} ->
@@ -192,7 +199,20 @@ loop(Nodes, Socket, FromName, IsLogined) ->
               end,
               loop(Nodes, Socket, FromName, IsLogined);
             "history" ->
-              void
+              MessageList = query_message_item(all),
+              lists:foreach(
+                fun({message,_Time, Name, ToName, Msg}) ->
+                  if
+                    Name =:= FromName ->
+                      send_message_to_other_server([node()],{send_to_self, node(), Socket, "you say to " ++ ToName ++ ": " ++ Msg});
+                    ToName =:= FromName ->
+                      send_message_to_other_server([node()],{send_to_self, node(), Socket,  Name ++ " says to you : " ++ Msg});
+                    ToName =:= "all" ->
+                      send_message_to_other_server([node()],{send_to_self, node(), Socket,  Name ++ " says to all : " ++ Msg});
+                    true -> void
+                  end
+                end,
+                MessageList)
           end;
         2 ->
           %% defined message
@@ -204,11 +224,13 @@ loop(Nodes, Socket, FromName, IsLogined) ->
                   DefinedMessage = defined_message({private, Command}),
                   send_message_to_other_server([node()],{send_to_self, node(), Socket, "you say to " ++ ToName ++ ":" ++ DefinedMessage}),
                   send_message_to_other_server([node()],{send_to_other, self(), Socket, ToName, FromName ++ " says to you:" ++ DefinedMessage}),
-                  send_message_to_other_server(Nodes,{broadcast, node(), [FromName,ToName], FromName ++ " says to " ++ ToName ++ ":" ++ DefinedMessage});
+                  send_message_to_other_server(Nodes,{broadcast, node(), [FromName,ToName], FromName ++ " says to " ++ ToName ++ ":" ++ DefinedMessage}),
+                  add_message_item(calendar:now_to_local_time(erlang:timestamp()), FromName, ToName, DefinedMessage);
                 true ->
                   DefinedMessage = defined_message({public, Command}),
                   send_message_to_other_server([node()],{send_to_self, node(), Socket, "you say to all:" ++ DefinedMessage}),
-                  send_message_to_other_server(Nodes,{broadcast, node(), [FromName], FromName ++ " says to all:" ++ DefinedMessage})
+                  send_message_to_other_server(Nodes,{broadcast, node(), [FromName], FromName ++ " says to all:" ++ DefinedMessage}),
+                  add_message_item(calendar:now_to_local_time(erlang:timestamp()), FromName, "all", DefinedMessage)
               end;
             true ->
               send_message_to_other_server([node()],{send_to_self, node(), Socket, "Invalid command"})
@@ -268,3 +290,29 @@ send_message_to_other_server(Nodes, Message) ->
       {controller, Node} ! Message
     end, Nodes
   ).
+
+do_this_once(Nodes) ->
+  mnesia:create_schema(Nodes),
+  mnesia:start(),
+  mnesia:create_table(message, [{disc_copies, Nodes}, {attributes, record_info(fields, message)}]),
+  mnesia:stop().
+
+reset_tables() ->
+  mnesia:clear_table(message).
+
+add_message_item(Time, FromName, ToName, Msg) ->
+  Row = #message{time=Time, from_name=FromName, to_name=ToName, msg=Msg},
+  F = fun() ->
+        mnesia:write(Row)
+      end,
+  mnesia:transaction(F).
+
+query_message_item(all) ->
+  do(qlc:q([Msg || Msg <- mnesia:table(message)])).
+
+do(Q) ->
+  F = fun() ->
+        qlc:e(Q)
+      end,
+  {atomic, Val} = mnesia:transaction(F),
+  Val.
